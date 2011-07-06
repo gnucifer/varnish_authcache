@@ -1,0 +1,150 @@
+<?php
+function varnish_authcache_settings_form() {
+	$form = array();
+	$form['varnish_authcache_cookie_lease_time'] = array(
+		'#type' => 'textfield',
+		'#title' => t('Lease time'),
+		'#description' =>
+			t('The duration of time the cookie Varnish will use for authenticated cache lookups will be valid. When expired a new cookie will have to be fetched from Drupal.'),
+		'#default_value' => variable_get('varnish_authcache_cookie_lease_time', 600),
+	);
+
+	$form['varnish_authcache_salt'] = array(
+		'#type' => 'textfield',
+		'#title' => t('Salt'),
+		'#description' =>
+			t('Shared secret hash-salt.'),
+		'#default_value' => variable_get('varnish_authcache_salt', 'test'),
+	);
+
+	return system_settings_form($form);
+}
+
+function varnish_authcache_menu(){
+	return array(
+		'admin/settings/varnish-authcache' => array(
+			'title' => 'Varnish Authcache',
+			'access arguments' => array('administer site configuration'),
+			'page callback' => 'drupal_get_form',
+			'page arguments' => array('varnish_authcache_settings_form'),
+		),
+		'admin/settings/varnish-authcache/settings' => array(
+			'title' => 'Settings',
+			'type' => MENU_DEFAULT_LOCAL_TASK,
+			'weight' => -99,
+		)
+	);
+
+}
+
+function varnish_authcache_hash() {
+	
+	$hook = 'varnish_authcache_hash';
+	$modules = module_implements('varnish_authcache_hash');
+
+
+	if(empty($modules)) {
+		//issue warning about no modules beeing enabled
+		return FALSE;	
+	}
+	else {
+		$parts = array();
+		foreach($modules as $module) {
+			$function = $module . '_' . $hook;
+			if($part = call_user_func($module . '_' . $hook)) {
+				$parts[] = $part;
+			}
+		}
+		if(!empty($parts)) {
+			//sorting
+			sort($parts);
+			//obfuscating
+			$key = 'varnish_authcache_hash_' . md5(implode('', $parts));
+			if(!variable_get($key, FALSE)) {
+				variable_set($key, md5(uniqid('', TRUE)));
+			}
+			return variable_get($key, $rid);
+		}
+		//else {
+		//	$hash  FALSE;
+		//}
+	}
+	return FALSE;
+}
+//auto generate salt with uniqid?
+//more safe hashing?
+function varnish_authcache_signature($value) {
+	return md5(ip_address(). variable_get('varnish_authcache_salt', 'test') . $value);
+}
+
+function varnish_authcache_init(){
+
+
+	//should be treated same as session cookie, right??
+	global $user;
+	//TODO: perhaps remove uid check?
+	if($user->uid && $authcache_hash = varnish_authcache_hash()) {
+
+		//This whole check is pretty pointless?
+		//Always renew cookie instead? Could save some extra detours to the backend
+		if(isset($_COOKIE['DRUPAL_AC'])) {
+			$values =  explode('.', $_COOKIE['DRUPAL_AC']);
+			if(count($values) === 3) {
+				list($hash, $expire, $sign) = $values;
+				//TODO: dot or not?
+				if(
+						$authcache_hash === $hash && /* same credentials as before? */
+						varnish_authcache_signature(implode('', array($hash, $expire))) === $sign &&  /* validates? */
+						$expire > time() /* if false browser/user may not be respecting cookie life-time */
+				) {
+					//everything in order, nothing needs to be done
+					//TODO: Or perhaps we should renew the cookie while we have the chance, probably
+					return;
+				}
+			}
+		}
+		//else refresh/create cookie
+		$expire = $_SERVER['REQUEST_TIME'] + (int) variable_get('varnish_authcache_cookie_lease_time', 600);
+		$values = array($authcache_hash, $expire);
+		$values[] = varnish_authcache_signature(implode('', $values));
+		$value = implode('.', $values);
+		_varnish_authcache_set_cookie('DRUPAL_AC', $value, $expire);
+	}
+	else {
+		//User not logged in, unset cookie
+		//TODO: hook into session?
+		varnish_authcache_cookie_destroy(); 
+	}
+}
+
+
+//Hook user
+function varnish_authcache_user($op, &$edit, &$account, $category = NULL) {
+	if($op == 'logout') {
+		varnish_authcache_cookie_destroy(); 
+	}
+}
+
+function varnish_authcache_cookie_destroy() {
+	if(isset($_COOKIE['DRUPAL_AC'])){
+		//Do not save this in cache, if session exires and this page is served the unauthenticated version will be cached for authenticated users
+		drupal_set_header('Pragma: no-cache');
+
+		//Perhaps instead configure vanish to never cache on set-cookie, any side effects?
+
+		_varnish_authcache_set_cookie('DRUPAL_AC', '', $_SERVER['REQUEST_TIME'] - 3600);
+		//TODO: unset perhaps not really necessary
+		unset($_COOKIE[$key]);
+	}
+}
+
+function _varnish_authcache_set_cookie($name, $value, $expire) {
+	$params = session_get_cookie_params();
+	if (version_compare(PHP_VERSION, '5.2.0') === 1) {
+		setcookie($name, $value, $expire, $params['path'], $params['domain'], $params['secure'], $params['httponly']);
+	}
+	else {
+		setcookie($name, $value, $expire, $params['path'], $params['domain'], $params['secure']);      
+	}
+}
+?>

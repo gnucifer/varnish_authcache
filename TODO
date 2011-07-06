@@ -1,0 +1,7 @@
+Problems:
+
+How to sync expiration of session cookie? Perhpas not a major issue but could be confusing for user? 
+
+Example:
+	User session expires, DRUPAL_AC cookie still there. User get a cache miss, page will be saved in varnish (drupal will unset ac_cookie). 
+

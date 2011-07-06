@@ -1,0 +1,6 @@
+name = Varnish Authcache
+description = Caching with varnish  for authenticated users
+package = varnish
+version = 6.x-0.1
+core = 6.x
+
